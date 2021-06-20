@@ -1,0 +1,355 @@
+package com.alokbharti.parkme;
+
+import androidx.appcompat.app.ActionBarDrawerToggle;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.AppCompatButton;
+import androidx.appcompat.widget.Toolbar;
+import androidx.core.view.GravityCompat;
+import androidx.drawerlayout.widget.DrawerLayout;
+import androidx.constraintlayout.widget.ConstraintLayout;
+
+import android.app.AlertDialog;
+import android.app.ProgressDialog;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.os.Bundle;
+import android.util.Log;
+import android.view.LayoutInflater;
+import android.view.MenuItem;
+import android.view.View;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import com.alokbharti.parkme.Interfaces.CommonAPIInterface;
+import com.alokbharti.parkme.Utilities.APIHelper;
+import com.androidnetworking.error.ANError;
+import com.androidnetworking.interfaces.JSONObjectRequestListener;
+import com.google.android.material.navigation.NavigationView;
+import com.rx2androidnetworking.Rx2AndroidNetworking;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
+import java.util.Locale;
+import java.util.Timer;
+import java.util.TimerTask;
+
+import static com.alokbharti.parkme.Utilities.GlobalConstants.cancelBookingUrl;
+import static com.alokbharti.parkme.Utilities.GlobalConstants.checkoutBookingUrl;
+import static com.alokbharti.parkme.Utilities.GlobalConstants.currentUserId;
+import static com.alokbharti.parkme.Utilities.GlobalConstants.parkingDetailsUrl;
+
+public class ActiveBooking extends AppCompatActivity implements NavigationView.OnNavigationItemSelectedListener, CommonAPIInterface {
+
+    private TextView noActiveBookingTV;
+    private TextView parkingAddress;
+    private TextView bill;
+    private TextView bookingTimeStamp;
+    private TextView bookingSlotDuration;
+    private TextView activeBookingId;
+    private TextView bookingStatus;
+    private TextView inOtp;
+    private TextView outOtp;
+    private Button checkout;
+    private APIHelper apiHelper;
+    private ConstraintLayout activeBookingsDetails;
+    private Button cancelActiveBooking;
+
+    boolean isActiveBookings = false;
+    boolean isTimerScheduled = false;
+    private Timer timer;
+
+    private int bookingId;
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_active_booking);
+        setTitle("Active Booking");
+        Toolbar toolbar = findViewById(R.id.toolbar2);
+        setSupportActionBar(toolbar);
+        timer = new Timer();
+
+        DrawerLayout drawer = findViewById(R.id.drawer_layout2);
+        NavigationView navigationView = findViewById(R.id.nav_view);
+        ActionBarDrawerToggle toggle = new ActionBarDrawerToggle(
+                this, drawer, toolbar, R.string.navigation_drawer_open, R.string.navigation_drawer_close);
+        drawer.addDrawerListener(toggle);
+        toggle.syncState();
+        navigationView.setNavigationItemSelectedListener(this);
+
+        initViews();
+        apiHelper = new APIHelper(this);
+        apiHelper.getActiveBookingDetails(currentUserId);
+    }
+
+    private void initViews() {
+        activeBookingId = findViewById(R.id.active_booking_id);
+        noActiveBookingTV = findViewById(R.id.no_active_booking_tv);
+        parkingAddress = findViewById(R.id.active_booking_parking_address);
+        inOtp = findViewById(R.id.active_booking_in_otp);
+        outOtp = findViewById(R.id.active_booking_out_otp);
+        bill = findViewById(R.id.active_booking_bill);
+        bookingSlotDuration = findViewById(R.id.active_booking_slot_duration);
+        bookingTimeStamp = findViewById(R.id.active_booking_in_time);
+        bookingStatus = findViewById(R.id.active_booking_status);
+        checkout = findViewById(R.id.checkout);
+        activeBookingsDetails = findViewById(R.id.active_booking_details);
+        cancelActiveBooking = findViewById(R.id.cancel_active_booking);
+
+        cancelActiveBooking.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                new AlertDialog.Builder(ActiveBooking.this)
+                        .setTitle("CANCEL BOOKING")
+                        .setMessage("Are you sure wanna cancel this booking??")
+                        .setPositiveButton("OK", new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface dialogInterface, int i) {
+                                cancelBookingApiCall(bookingId);
+                            }
+                        })
+                        .setNegativeButton("CANCEL", null)
+                        .show();
+            }
+        });
+    }
+
+    @Override
+    public void onSuccessfulHit(final JSONObject response) {
+        if(response==null){
+            //empty body
+            Log.e("In response"," null");
+            activeBookingsDetails.setVisibility(View.GONE);
+            isActiveBookings = false;
+            noActiveBookingTV.setVisibility(View.VISIBLE);
+        }else{
+            isActiveBookings = true;
+            noActiveBookingTV.setVisibility(View.GONE);
+            activeBookingsDetails.setVisibility(View.VISIBLE);
+
+            try {
+                bookingId = response.getInt("bookingId");
+                activeBookingId.setText(String.format(Locale.ENGLISH,"Booking ID: %d", bookingId));
+                int parkingId = response.getInt("parkingId");
+                getParkingDetails(parkingId);
+                bill.setText(String.format("Total Bill: %s", String.valueOf(response.getDouble("bill"))));
+                bookingSlotDuration.setText(String.format("Booking slot duration: %s", String.valueOf(response.getInt("slotDuration"))));
+                inOtp.setText(String.valueOf(response.getInt("inOtp")));
+
+                DateFormat formatter = new SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH);
+                long inTimeStamp = response.getLong("inTime");
+                Log.e("inTimeStamp in AB: ", " "+inTimeStamp);
+                Calendar calendar = Calendar.getInstance();
+                calendar.setTimeInMillis(inTimeStamp);
+                bookingTimeStamp.setText(String.format("Booking time: %s", formatter.format(calendar.getTime())));
+                String status = response.getString("status");
+                bookingStatus.setText(status.toUpperCase());
+                if(status.equals("Parked"))checkout.setVisibility(View.VISIBLE); else checkout.setVisibility(View.GONE);
+                if(status.equals("Booked")){
+                    cancelActiveBooking.setVisibility(View.VISIBLE);
+                    setTimerForBookingStatus();
+                }
+                else  cancelActiveBooking.setVisibility(View.GONE);
+                if(status.equals("CheckedOut")){
+//                    inOtp.setVisibility(View.GONE);
+//                    outOtp.setVisibility(View.VISIBLE);
+                    outOtp.setText(String.valueOf(response.getInt("outOtp")));
+                    setTimerForBookingStatus();
+                }
+                if(status.equals("Booked") || status.equals("CheckedOut")){
+                    checkout.setEnabled(false);
+                }else{
+                    checkout.setEnabled(true);
+                }
+                checkout.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View view) {
+                        try {
+                            getOutOtp(response.getInt("bookingId"));
+                        } catch (JSONException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                });
+            } catch (JSONException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    private void getOutOtp(int bookingId) {
+        final ProgressDialog progressDialog = new ProgressDialog(this);
+        progressDialog.setMessage("Getting OTP.....");
+        progressDialog.show();
+
+        final JSONObject jsonObject = new JSONObject();
+        try{
+            jsonObject.put("bookingId", bookingId);
+        }catch(JSONException e){
+            e.printStackTrace();
+        }
+
+        Rx2AndroidNetworking.post(checkoutBookingUrl)
+                .addJSONObjectBody(jsonObject)
+                .build()
+                .getAsJSONObject(new JSONObjectRequestListener() {
+
+                    @Override
+                    public void onResponse(JSONObject response) {
+                        progressDialog.dismiss();
+                        try {
+                            View view = LayoutInflater.from(ActiveBooking.this).inflate(R.layout.otp_dialog_alert, null);
+                            final AlertDialog alertDialog = new AlertDialog.Builder(ActiveBooking.this)
+                                    .setView(view)
+                                    .show();
+
+                            TextView checkoutOtpTV = view.findViewById(R.id.checkout_otp);
+                            checkoutOtpTV.setText(String.valueOf(response.getInt("outOtp")));
+                            AppCompatButton cancelButton = view.findViewById(R.id.checkout_cancel_button);
+                            cancelButton.setOnClickListener(new View.OnClickListener() {
+                                @Override
+                                public void onClick(View view) {
+                                    alertDialog.dismiss();
+                                }
+                            });
+
+                            AppCompatButton checkoutProceedButton = view.findViewById(R.id.checkout_proceed_button);
+                            checkoutProceedButton.setOnClickListener(new View.OnClickListener() {
+                                @Override
+                                public void onClick(View view) {
+                                    Toast.makeText(ActiveBooking.this, "Your Booking status will be updated. Thanks for booking with us :)", Toast.LENGTH_SHORT).show();
+                                    alertDialog.dismiss();
+                                    apiHelper.getActiveBookingDetails(currentUserId);
+
+                                    setTimerForBookingStatus();
+                                }
+                            });
+                        } catch (JSONException e) {
+                            e.printStackTrace();
+                        }
+                    }
+
+                    @Override
+                    public void onError(ANError anError) {
+                        progressDialog.dismiss();
+                        Toast.makeText(ActiveBooking.this, "Can't able to get OTP!!!", Toast.LENGTH_SHORT).show();
+                    }
+                });
+
+    }
+
+    private void setTimerForBookingStatus() {
+        if(!isTimerScheduled) {
+            timer.scheduleAtFixedRate(new TimerTask() {
+                @Override
+                public void run() {
+                    apiHelper.getActiveBookingDetails(currentUserId);
+                }
+            }, 0, 5000);
+            isTimerScheduled = true;
+        }
+    }
+
+    @Override
+    public void onFailureAPIHit() {
+        Toast.makeText(this, "Failed to get data, check our internet", Toast.LENGTH_SHORT).show();
+    }
+
+    public void getParkingDetails(int parkingId){
+        final JSONObject jsonObject = new JSONObject();
+        try{
+            jsonObject.put("parkingId", parkingId);
+        }catch(JSONException e){
+            e.printStackTrace();
+        }
+        Log.e("parking Id: ", ""+ parkingId);
+        Rx2AndroidNetworking.post(parkingDetailsUrl)
+                .addJSONObjectBody(jsonObject)
+                .build()
+                .getAsJSONObject(new JSONObjectRequestListener() {
+                    @Override
+                    public void onResponse(JSONObject response) {
+                        try {
+                            Log.e("parking address", response.getString("address"));
+                            parkingAddress.setText(String.format("Parking address: %s", response.getString("address")));
+                        } catch (JSONException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                    @Override
+                    public void onError(ANError anError) {
+
+                    }
+                });
+    }
+
+    public void cancelBookingApiCall(int bookingId){
+        JSONObject jsonObject = new JSONObject();
+        try {
+            jsonObject.put("bookingId", bookingId);
+        } catch (JSONException e) {
+            e.printStackTrace();
+        }
+
+        Rx2AndroidNetworking.post(cancelBookingUrl)
+                .addJSONObjectBody(jsonObject)
+                .build()
+                .getAsJSONObject(new JSONObjectRequestListener() {
+                    @Override
+                    public void onResponse(JSONObject response) {
+                        Toast.makeText(ActiveBooking.this, "Booking cancelled", Toast.LENGTH_SHORT).show();
+                        Intent intent = new Intent(ActiveBooking.this, MainActivity.class);
+                        startActivity(intent);
+                        finish();
+                    }
+
+                    @Override
+                    public void onError(ANError anError) {
+
+                    }
+                });
+    }
+
+    @Override
+    public void onBackPressed() {
+        super.onBackPressed();
+        DrawerLayout drawer = findViewById(R.id.drawer_layout2);
+        if (drawer.isDrawerOpen(GravityCompat.START)) {
+            drawer.closeDrawer(GravityCompat.START);
+        } else if(!isActiveBookings){
+            finish();
+        } else {
+            finishAffinity();
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if(timer!=null) timer.cancel();
+    }
+
+    @Override
+    public boolean onNavigationItemSelected(MenuItem item) {
+        // Handle navigation view item clicks here.
+        int id = item.getItemId();
+
+        if (id == R.id.nav_profile) {
+            // Handle the camera action
+            startActivity(new Intent(this,ProfileActivity.class));
+        } else if (id == R.id.nav_history) {
+            startActivity(new Intent(this, HistoryActivity.class));
+        } else if (id == R.id.nav_active_booking) {
+            //do null
+        }
+
+        DrawerLayout drawer = findViewById(R.id.drawer_layout2);
+        drawer.closeDrawer(GravityCompat.START);
+        return true;
+    }
+}
